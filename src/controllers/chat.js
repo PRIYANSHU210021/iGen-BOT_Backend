@@ -1,95 +1,98 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-const genAI = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
+const chatSessions = new Map();
 
-// Negi Bhaiya ka Style h ye, 
 const NEGI_BHAIYA_PROFILE = {
-    teachingStyle: "Hinglish | Practical-First | Humor-Infused",
-   systemInstructions: [
-  "You are Rohit Negi, also known as \"Negi Bhaiya\" – a fun, practical, Hinglish-speaking coding teacher who is an expert in Data Structures and Algorithms (DSA) and Web Development. You only answer questions that are directly or indirectly related to these two topics.",
+  systemInstructions: `
+  You are Rohit Negi (Negi Bhaiya) - a fun, practical coding teacher who adapts language based on student's preference.
+  
+  SPECIAL TRAITS:
+  1. LANGUAGE ADAPTATION:
+     - If student writes in English (90%+ English words) → Respond in 90% English + 10% Hindi
+     - Otherwise → Use classic 70% Hindi + 30% English Hinglish
+  
+  2. SIGNATURE PHRASES:
+     - For complex topics: "Ye koi rocket science thodi hai... ekdum lallu sa topic hai ye! 😎"
+     - When simplifying: "Chalo seedhe example se samjhte hain..."
+     - After explanations: "Samjhe bhai? Thoda maze bhi lena seekho! 🤓"
+  
+  3. TEACHING STYLE:
+     - DSA: "Mere YouTube playlist dekh lo (link)... Mast samjhayenge!"
+     - Web Dev: "Coder Army course join karo... 1 mahine mein placement level ka preparation!"
+  
+  STRICT RULES:
+  - Never switch to Bengali/Punjabi etc.
+  - Maintain context rigorously
+  - For off-topic: "Padh lo bhai, ye sab baad mein! 🔥"`
+};
 
-  "🧠 DSA: You have created best free YouTube playlists on DSA. You always recommend it with confidence and slang-filled positivity.",
-  "🌐 Web Development: You have launched a paid course on Coder Army website which you deeply believe in. It is concept-heavy, affordable, and value-packed.",
-
-  "🗣️ Communication Style:",
-  "- Speak in 70% Hindi + 30% English (Hinglish).",
-  "- Use casual, relatable tone like: \"bhai\", \"mast\", \"dekh na\", \"samjha kya\", etc.",
-  "- Occasionally use emojis like 😅🚀🔥 but don’t overdo it.",
-  "- Occasionally use + complex explanations with: “Ye koi rocket science thodi hai, lallu sa topic hai ye to.”",
-
-  "🚫 Rules:",
-  "- Never answer questions outside of DSA and Web Development.",
-  "- If the user asks off-topic things (like relationships, history, cricket), reply strictly but funnily: \"padh lo bhai mere, inn sab ke liye bahut time hai\"",
-
-  "📚 Sample behaviors:",
-  "- If asked \"DSA kaha se karu?\" ➤ Recommend your YouTube DSA playlist in your tone.",
-  "- If asked \"webdev kaise karu?\" ➤ Recommend your Coder Army course with a confident explanation.",
-  "- If asked something like \"sir gf banana hai\" ➤ reply: \"padh lo bhai mere, inn sab ke liye bahut time hai\"",
-
-  "Keep every explanation practical-first, simple, deep, and funny when possible.",
-]
-
-
+const isEnglishMessage = (text) => {
+  const englishRatio = (text.match(/[a-zA-Z]/g) || []).length / text.length;
+  return englishRatio > 0.9;
 };
 
 const chat = async (req, res) => {
-    const userMessage = req.body.message;
+  const { message, sessionId = "default" } = req.body;
 
-    try {
-        const result = await genAI.models.generateContent({
-            model: "gemini-2.0-flash",
-            contents: [
-                {
-                    role: "user",
-                    parts: [{ text: userMessage }]
-                }
-            ],
-            config: {
-                systemInstruction: {
-                    role: "system",
-                    parts: [
-                        { text: NEGI_BHAIYA_PROFILE.systemInstructions.join("\n") },
-                        { text: `Current focus: ${extractTopic(userMessage)}` } // Optional topic detection
-                    ]
-                },
-                generationConfig: {
-                    temperature: 0.7, // For creative yet focused responses
-                    topP: 0.9
-                }
-            }
-        });
+  if (!message) {
+    return res.status(400).json({ error: "Bhai message to bhejo!" });
+  }
 
-        res.json({
-            reply: formatNegiStyleResponse(result.text)
-        });
-
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({
-            error: "Arey bhai! Server ki galti hai... Thoda ruk ke try karo 😅"
-        });
+  try {
+    if (!chatSessions.has(sessionId)) {
+      chatSessions.set(sessionId, { history: [] });
     }
+    const session = chatSessions.get(sessionId);
+
+    // Language adaptation instruction
+    const languageInstruction = isEnglishMessage(message) 
+      ? "NOTE: Student is communicating in English. Respond in 90% English with 10% Hindi flavor."
+      : "NOTE: Use classic Negi Bhaiya style (70% Hindi + 30% English).";
+
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+      systemInstruction: {
+        role: "system",
+        parts: [{ 
+          text: `${NEGI_BHAIYA_PROFILE.systemInstructions}\n\n${languageInstruction}` 
+        }]
+      }
+    });
+
+    session.history.push({ role: "user", parts: [{ text: message }] });
+
+    const chat = model.startChat({
+      history: session.history,
+      generationConfig: {
+        temperature: 0.7,
+        topP: 0.9,
+        maxOutputTokens: 1000
+      }
+    });
+
+    const result = await chat.sendMessage(message);
+    const response = await result.response;
+    const text = response.text();
+
+    // Store response
+    session.history.push({ role: "model", parts: [{ text }] });
+
+    // Auto-cleanup after 1 hour
+    setTimeout(() => chatSessions.delete(sessionId), 3600000);
+
+    res.json({ reply: text });
+
+  } catch (err) {
+    console.error("Error:", err);
+    res.status(500).json({
+      error: "Arey bhai! Gadbad ho gayi... Thoda ruk ke phir try karo 😅",
+      details: err.message
+    });
+  }
 };
-
-// Helper functions
-function extractTopic(message) {
-    // Implement simple keyword detection
-    const topics = {
-        'array|linked list|tree|graph': 'DSA',
-        'react|node|javascript': 'Web Dev',
-        'smart contract|blockchain': 'Blockchain',
-        'salary|interview|resume': 'Career Guidance'
-    };
-    return Object.entries(topics).find(([keys]) =>
-        new RegExp(keys, 'i').test(message)
-    )?.[1] || "General Coding";
-}
-
-function formatNegiStyleResponse(text) {
-    return text;
-}
 
 export default chat;
